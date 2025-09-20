@@ -1,0 +1,10 @@
+langchain-core
+langchain-community
+langchain-google-genai
+langchain
+python-dotenv
+beautifulsoup4
+sentence-transformers
+chromadb
+requests
+pymupdf4llm
