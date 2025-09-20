@@ -10,3 +10,5 @@ def get_text_splitter(chunk_size=1000, chunk_overlap=200):
 
 def get_vector_store(embeddings, persist_directory="chroma_db"):
     return Chroma(embedding_function=embeddings, persist_directory=persist_directory)
+
+#Testing
