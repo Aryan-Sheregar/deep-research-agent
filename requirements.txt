@@ -8,3 +8,7 @@ sentence-transformers
 chromadb
 requests
 pymupdf4llm
+tavily-python
+langchain-tavily
+langchain-ollama
+langchain-chroma
