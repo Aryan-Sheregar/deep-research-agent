@@ -1,21 +1,29 @@
+import os
+import shutil
 import streamlit as st
 from dotenv import load_dotenv
 from fpdf import FPDF
 import markdown
+
+# --- Agent-related imports ---
 from langchain import hub
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain.tools.retriever import create_retriever_tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
+from langchain_core.output_parsers import StrOutputParser
 from google.api_core.exceptions import ResourceExhausted
+
+# --- Use the correct function names from your files ---
 from agent_tools import get_web_search_results, scrape_website
 from knowledge_base import (
+    get_model_embeddings,
     get_text_splitter,
     get_vector_store,
     add_context_to_vector_store,
     safe_clear_vector_store
 )
+
 load_dotenv()
 
 st.set_page_config(page_title="Deep Research Agent", layout="wide")
@@ -26,12 +34,12 @@ def convert_md_to_pdf(md_content):
     pdf = FPDF()
     pdf.add_page()
     pdf.write_html(html)
-    return bytes(pdf.output(dest='S'))
+    return bytes(pdf.output())
+
 
 def run_ingestion_pipeline(topic: str):
     with st.spinner(f"Starting ingestion for '{topic}'..."):
         safe_clear_vector_store()
-
         search_tool = get_web_search_results()
         text_splitter = get_text_splitter()
         vector_store = get_vector_store()
@@ -59,8 +67,7 @@ def run_ingestion_pipeline(topic: str):
             if content:
                 add_context_to_vector_store(
                     vector_store, text_splitter, content, url)
-                st.session_state['source_urls'].append(
-                    url)  # Add successful URL to list
+                st.session_state['source_urls'].append(url)
             else:
                 st.warning(f"Could not extract content from {url}. Skipping.")
     st.success("Ingestion complete! You can now ask questions.")
@@ -84,17 +91,19 @@ with st.sidebar:
             st.markdown(f"- [{url}]({url})")
 
 
-#Chat UI
+# Chat UI
 if 'research_active' in st.session_state and st.session_state['research_active']:
     llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest")
     vector_store = get_vector_store()
     retriever = vector_store.as_retriever()
 
     web_search_tool = get_web_search_results()
+    web_search_tool.description = "A web search tool. Use this ONLY if the local knowledge base does not provide a sufficient answer to the user's query."
+
     retriever_tool = create_retriever_tool(
         retriever,
         "knowledge_base_retriever",
-        "Searches the local vector store for information."
+        "MUST USE FIRST. Searches the local vector store for detailed, topic-specific information. This is your primary tool for answering user questions."
     )
 
     tools = [web_search_tool, retriever_tool]
@@ -112,7 +121,7 @@ if 'research_active' in st.session_state and st.session_state['research_active']
     if 'messages' not in st.session_state:
         st.session_state.messages = []
 
-    for message in st.session_state.messages:
+    for i, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             if message["role"] == "assistant":
@@ -124,6 +133,7 @@ if 'research_active' in st.session_state and st.session_state['research_active']
                         data=message["content"],
                         file_name="research_report.md",
                         mime="text/markdown",
+                        key=f"md_{i}"
                     )
                 with col2:
                     st.download_button(
@@ -131,6 +141,7 @@ if 'research_active' in st.session_state and st.session_state['research_active']
                         data=pdf_bytes,
                         file_name="research_report.pdf",
                         mime="application/pdf",
+                        key=f"pdf_{i}"
                     )
 
     if user_query := st.chat_input("Ask a follow-up question..."):
@@ -144,19 +155,45 @@ if 'research_active' in st.session_state and st.session_state['research_active']
                 try:
                     response = agent_executor.invoke({"input": user_query})
 
+                    retrieved_sources = []
+                    for action, observation in response.get('intermediate_steps', []):
+                        if action.tool == 'knowledge_base_retriever':
+                            retrieved_docs = retriever.invoke(
+                                action.tool_input)
+                            for doc in retrieved_docs:
+                                source = doc.metadata.get('source')
+                                if source and source not in retrieved_sources:
+                                    retrieved_sources.append(source)
+
+                    sources_text = "\n\n".join(
+                        [f"- {source}" for source in retrieved_sources])
+
                     formatting_prompt_template = """
                     You are a research assistant. Your task is to reformat the following text into a structured, easy-to-read report using Markdown.
+                    - A clear and concise title.
+                    - An introductory summary paragraph.
+                    - Headings for different sections or key findings.
+                    - Bullet points to list important details or challenges.
+                    - A concluding summary.
+                    - Finally, list the sources provided, under a "Sources" heading.
+
                     Original Text: {original_text}
+                    
+                    Sources:
+                    {sources}
+
                     Formatted Report:
                     """
 
                     formatting_prompt = PromptTemplate(
-                        input_variables=["original_text"], template=formatting_prompt_template)
-                    formatting_chain = LLMChain(
-                        llm=llm, prompt=formatting_prompt)
-                    formatted_output = formatting_chain.invoke(
-                        {"original_text": response['output']})
-                    final_report = formatted_output['text']
+                        input_variables=["original_text", "sources"], template=formatting_prompt_template)
+
+                    output_parser = StrOutputParser()
+                    formatting_chain = formatting_prompt | llm | output_parser
+                    final_report = formatting_chain.invoke({
+                        "original_text": response['output'],
+                        "sources": sources_text
+                    })
 
                     with st.expander("Show agent's thought process"):
                         thoughts = ""
@@ -172,7 +209,7 @@ if 'research_active' in st.session_state and st.session_state['research_active']
                                 for doc in observation:
                                     content_preview = (
                                         doc.page_content[:200] + '...') if len(doc.page_content) > 200 else doc.page_content
-                                    source = doc.metadata.get('source', 'NA')
+                                    source = doc.metadata.get('source', 'N/A')
                                     formatted_obs += f"- **Source:** {source}\n  - *Preview:* {content_preview}\n"
                                 thoughts += formatted_obs if formatted_obs else "No relevant information found in the knowledge base."
                             else:
@@ -181,7 +218,7 @@ if 'research_active' in st.session_state and st.session_state['research_active']
                         st.markdown(thoughts)
 
                     st.markdown(final_report)
-                    
+
                     pdf_bytes_new = convert_md_to_pdf(final_report)
                     col1_new, col2_new = st.columns(2)
                     with col1_new:
@@ -190,6 +227,7 @@ if 'research_active' in st.session_state and st.session_state['research_active']
                             data=final_report,
                             file_name="research_report.md",
                             mime="text/markdown",
+                            key="md_new"
                         )
                     with col2_new:
                         st.download_button(
@@ -197,6 +235,7 @@ if 'research_active' in st.session_state and st.session_state['research_active']
                             data=pdf_bytes_new,
                             file_name="research_report.pdf",
                             mime="application/pdf",
+                            key="pdf_new"
                         )
                     st.session_state.messages.append(
                         {"role": "assistant", "content": final_report})
