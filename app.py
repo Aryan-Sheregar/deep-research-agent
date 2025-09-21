@@ -1,4 +1,6 @@
-__import__("chrusp").load_sqlite()
+import sys
+__import__('pysqlite3')
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 import streamlit as st
 from dotenv import load_dotenv
 from fpdf import FPDF

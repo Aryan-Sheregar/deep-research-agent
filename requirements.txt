@@ -14,4 +14,4 @@ langchain-ollama
 langchain-chroma
 streamlit
 fpdf2 
-chrusp
+pysqlite3-binary==0.5.2
