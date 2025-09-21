@@ -14,4 +14,4 @@ langchain-ollama
 langchain-chroma
 streamlit
 fpdf2 
-markdown
+chrusp

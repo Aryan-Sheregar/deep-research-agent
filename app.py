@@ -1,3 +1,4 @@
+__import__("chrusp").load_sqlite()
 import streamlit as st
 from dotenv import load_dotenv
 from fpdf import FPDF
