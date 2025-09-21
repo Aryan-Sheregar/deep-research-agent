@@ -12,3 +12,6 @@ tavily-python
 langchain-tavily
 langchain-ollama
 langchain-chroma
+streamlit
+fpdf2 
+markdown
