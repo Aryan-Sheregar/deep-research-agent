@@ -1,11 +1,7 @@
-import os
-import shutil
 import streamlit as st
 from dotenv import load_dotenv
 from fpdf import FPDF
 import markdown
-
-# --- Agent-related imports ---
 from langchain import hub
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain.tools.retriever import create_retriever_tool
@@ -13,11 +9,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from google.api_core.exceptions import ResourceExhausted
-
-# --- Use the correct function names from your files ---
 from agent_tools import get_web_search_results, scrape_website
 from knowledge_base import (
-    get_model_embeddings,
     get_text_splitter,
     get_vector_store,
     add_context_to_vector_store,
@@ -28,6 +21,7 @@ load_dotenv()
 
 st.set_page_config(page_title="Deep Research Agent", layout="wide")
 st.title("Deep Research Agent")
+
 
 def convert_md_to_pdf(md_content):
     html = markdown.markdown(md_content)
@@ -43,25 +37,49 @@ def run_ingestion_pipeline(topic: str):
         search_tool = get_web_search_results()
         text_splitter = get_text_splitter()
         vector_store = get_vector_store()
+        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest")
 
         st.session_state['source_urls'] = []
 
-        st.write("Step 1: Discovering relevant sources...")
-        search_results = search_tool.invoke({"query": topic})
+        st.write("Step 1: Expanding research topic into sub-queries...")
 
-        if not search_results or 'results' not in search_results:
+        expansion_prompt = PromptTemplate.from_template(
+            """You are a world-class researcher. Your task is to expand a given research topic into 3 more detailed and specific search queries that cover different key aspects of this topic. Return ONLY the queries, each on a new line, without any numbering or introduction.
+
+            Topic: {topic}
+
+            Expanded Queries:"""
+        )
+        expansion_chain = expansion_prompt | llm | StrOutputParser()
+        expanded_queries_str = expansion_chain.invoke({"topic": topic})
+        expanded_queries = [topic] + expanded_queries_str.strip().split('\n')
+
+        st.info("Generated Sub-Queries:")
+        for q in expanded_queries:
+            st.markdown(f"- `{q}`")
+
+        st.write("Step 2: Discovering relevant sources for all sub-queries...")
+        all_search_results = []
+        seen_urls = set()
+
+        for query in expanded_queries:
+            search_results = search_tool.invoke({"query": query})
+            if search_results and 'results' in search_results:
+                for result in search_results.get('results', []):
+                    url = result.get('url')
+                    if url and url not in seen_urls:
+                        all_search_results.append(result)
+                        seen_urls.add(url)
+
+        if not all_search_results:
             st.error("Discovery failed. No search results found.")
             return
 
-        results_list = search_results.get('results', [])
-        st.write(f"Found {len(results_list)} potential sources.")
+        st.write(f"Found {len(all_search_results)} unique potential sources.")
 
-        for result in results_list:
+        for result in all_search_results:
             url = result.get('url')
-            if not url:
-                continue
-
-            st.write(f"Extracting & Indexing: {url}")
+            st.write(f"Step 3: Extracting & Indexing: {url}")
             content = scrape_website(url)
 
             if content:
@@ -71,6 +89,7 @@ def run_ingestion_pipeline(topic: str):
             else:
                 st.warning(f"Could not extract content from {url}. Skipping.")
     st.success("Ingestion complete! You can now ask questions.")
+
 
 # Sidebar for starting a new research session
 with st.sidebar:
@@ -168,25 +187,22 @@ if 'research_active' in st.session_state and st.session_state['research_active']
                     sources_text = "\n\n".join(
                         [f"- {source}" for source in retrieved_sources])
 
-                    formatting_prompt_template = """
-                    You are a research assistant. Your task is to reformat the following text into a structured, easy-to-read report using Markdown.
-                    - A clear and concise title.
-                    - An introductory summary paragraph.
-                    - Headings for different sections or key findings.
-                    - Bullet points to list important details or challenges.
-                    - A concluding summary.
-                    - Finally, list the sources provided, under a "Sources" heading.
+                    formatting_prompt = PromptTemplate.from_template(
+                        """You are a research assistant. Your task is to reformat the following text into a structured, easy-to-read report using Markdown.
+                        - A clear and concise title.
+                        - An introductory summary paragraph.
+                        - Headings for different sections or key findings.
+                        - Bullet points to list important details or challenges.
+                        - A concluding summary.
+                        - Finally, list the sources provided, under a "Sources" heading.
 
-                    Original Text: {original_text}
-                    
-                    Sources:
-                    {sources}
+                        Original Text: {original_text}
+                        
+                        Sources:
+                        {sources}
 
-                    Formatted Report:
-                    """
-
-                    formatting_prompt = PromptTemplate(
-                        input_variables=["original_text", "sources"], template=formatting_prompt_template)
+                        Formatted Report:"""
+                    )
 
                     output_parser = StrOutputParser()
                     formatting_chain = formatting_prompt | llm | output_parser
