@@ -3,6 +3,7 @@ from langchain_chroma import Chroma
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import chromadb
 import streamlit as st
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 """
 Cached resources for embeddings, text splitter, and vector store. As when you start a new research the old vector store is deleted, these caches need to be cleared as well. 
@@ -10,7 +11,7 @@ Cached resources for embeddings, text splitter, and vector store. As when you st
 
 @st.cache_resource(show_spinner=False)
 def get_model_embeddings(model="gemma:2b"):
-    return OllamaEmbeddings(model=model)
+    return GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 
 
 def get_text_splitter(chunk_size=1000, chunk_overlap=200):
